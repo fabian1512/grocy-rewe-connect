@@ -9,9 +9,13 @@ from grocy_connector import (
     get_ean_from_rewe_code,
     grocy_product_exists,
 )
+from rewe_products_import import main as update_rewe_products_db
 
 import grocy_connector
 import json
+
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 RECEIPT_URL = "https://shop.rewe.de/api/receipts/"
 
@@ -35,10 +39,10 @@ def fetch_rewe_bon(rtsp: str):
         receipt_list = response.json()
     except requests.exceptions.RequestException as e:
         print(f"{ERROR} HTTP-Fehler beim Abrufen der eBon-Liste: {e}")
-        return None
+        return None, None
     if 'items' not in receipt_list:
         print(f"{ERROR} Keine 'items' in der Antwort gefunden.")
-        return None
+        return None, None
 
     option_receipts = receipt_list['items']
     print(f"{OK} Empfange eBon-Liste der letzten Einkäufe:")
@@ -61,10 +65,12 @@ def fetch_rewe_bon(rtsp: str):
         rewe_bon_response.raise_for_status()
     except requests.exceptions.RequestException as e:
         print(f"{ERROR} Fehler beim Abrufen des ausgewählten Rewe-Bons: {e}")
-        return None
+        return None, None
 
     print(f"{OK} Rewe-Bon mit der UUID {option_receipts[option]['receiptId']} wurde erfolgreich abgerufen")
-    return rewe_bon_response.json().get("articles", [])
+    # Extrahiere das Kaufdatum
+    purchased_date = option_receipts[option]['receiptTimestamp'][:10]  # "YYYY-MM-DD"
+    return rewe_bon_response.json().get("articles", []), purchased_date
 
 def processrewe_bon(rewe_bon, purchased_date=None):
     for product in rewe_bon:
@@ -93,16 +99,16 @@ def main():
     print("Der RTSP Token ist hart im Script hinterlegt und wird verwendet.\n")
 
     rtsp = HARDCODED_RTSP_TOKEN
-    rewe_bon = fetch_rewe_bon(rtsp)
+    rewe_bon, purchased_date = fetch_rewe_bon(rtsp)
 
     if rewe_bon:
-        print(f"{OK} --- Kompletter Bon-Inhalt ---")
-        print(json.dumps(rewe_bon, indent=2, ensure_ascii=False))
-        print(f"{OK} --- Ende Bon-Inhalt ---\n")
-        processrewe_bon(rewe_bon)
+        processrewe_bon(rewe_bon, purchased_date=purchased_date)
     else:
         print(f"{ERROR} Kein gültiger eBon abgerufen. Bitte Token prüfen und erneut versuchen.")
     grocy_connector.db_conn.close()
 
 if __name__ == "__main__":
+    # Prüfe und aktualisiere die REWE-Produktdatenbank, falls neue Daten vorhanden sind
+    update_rewe_products_db()
+    # Starte danach die eigentliche Hauptfunktion
     main()

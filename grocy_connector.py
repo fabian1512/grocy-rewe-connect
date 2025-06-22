@@ -10,7 +10,7 @@ import base64
 import sqlite3
 import re
 from colorTerminal import OK, WARN, ERROR
-from config import GROCY_API_URL, GROCY_API_KEY
+from config import GROCY_API_URL, GROCY_API_KEY, GROCY_LOCATION_ID_KUEHLSCHRANK, GROCY_SHOPPING_LOCATION_ID_REWE, GROCY_DEFAULT_BEST_BEFORE_DAYS, GROCY_MIN_STOCK_AMOUNT
 
 GROCY_BASE_URL = GROCY_API_URL + "/api"
 GROCY_HEADER = {
@@ -50,9 +50,6 @@ def grocy_product_name_exists(product_name):
         return None
 
 def create_product_in_grocy(product_data, ean):
-    LOCATION_ID_KUEHLSCHRANK = 2
-    SHOPPING_LOCATION_ID_REWE = 1
-
     product_name = product_data.get("product_name", "Unbenanntes Produkt")
     # Prüfe, ob Produktname schon existiert
     existing_id = grocy_product_name_exists(product_name)
@@ -65,10 +62,10 @@ def create_product_in_grocy(product_data, ean):
         "qu_id_stock": 2,
         "qu_id_purchase": 2,
         "qu_id_price": 2,
-        "default_best_before_days": 30,
-        "location_id": LOCATION_ID_KUEHLSCHRANK,
-        "shopping_location_id": SHOPPING_LOCATION_ID_REWE,
-        "min_stock_amount": 0,
+        "default_best_before_days": GROCY_DEFAULT_BEST_BEFORE_DAYS,
+        "location_id": GROCY_LOCATION_ID_KUEHLSCHRANK,
+        "shopping_location_id": GROCY_SHOPPING_LOCATION_ID_REWE,  # <-- hier korrigiert!
+        "min_stock_amount": GROCY_MIN_STOCK_AMOUNT,
     }
     try:
         r = requests.post(
@@ -216,9 +213,6 @@ def update_product_picture(product_id, file_name):
         return False
 
 def create_product_in_grocy(product_data, ean):
-    LOCATION_ID_KUEHLSCHRANK = 1
-    SHOPPING_LOCATION_ID_REWE = 1
-
     product_name = product_data.get("product_name", "Unbenanntes Produkt")
     # Prüfe, ob Produktname schon existiert
     existing_id = grocy_product_name_exists(product_name)
@@ -231,10 +225,10 @@ def create_product_in_grocy(product_data, ean):
         "qu_id_stock": 2,
         "qu_id_purchase": 2,
         "qu_id_price": 2,
-        "default_best_before_days": 30,
-        "location_id": LOCATION_ID_KUEHLSCHRANK,
-        "shopping_location_id": SHOPPING_LOCATION_ID_REWE,
-        "min_stock_amount": 0,
+        "default_best_before_days": GROCY_DEFAULT_BEST_BEFORE_DAYS,
+        "location_id": GROCY_LOCATION_ID_KUEHLSCHRANK,
+        "shopping_location_id": GROCY_SHOPPING_LOCATION_ID_REWE,
+        "min_stock_amount": GROCY_MIN_STOCK_AMOUNT,
     }
     try:
         r = requests.post(
@@ -302,7 +296,7 @@ def update_stock(product_id, amount, price, purchased_date=None):
         "price": price,
     }
     if purchased_date:
-        stock_info["purchased_date"] = purchased_date  # YYYY-MM-DD
+        stock_info["purchased_date"] = purchased_date  # Muss exakt so heißen!
     try:
         r = requests.post(
             url,
@@ -312,7 +306,7 @@ def update_stock(product_id, amount, price, purchased_date=None):
             verify=False,
         )
         r.raise_for_status()
-        print(f"{OK} Bestand für Produkt-ID {product_id} aktualisiert.")
+        print(f"{OK} Bestand für Produkt-ID {product_id} aktualisiert. (Kaufdatum: {purchased_date})")
         return True
     except Exception as e:
         print(f"{WARN} Fehler beim Aktualisieren des Bestands: {e}")
@@ -374,7 +368,7 @@ def add_or_update_product(ean, amount, price, bon_product_name=None, purchased_d
     if grocy_product_exists(ean):
         product_id = get_grocy_product_id_by_ean(ean)
         if product_id:
-            return update_stock(product_id, amount, price, purchased_date=purchased_date)
+            return update_stock(product_id, amount, price, purchased_date)
         else:
             print(f"{WARN} Produkt-ID für EAN {ean} konnte nicht gefunden werden.")
             return False
