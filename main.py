@@ -3,17 +3,20 @@ from colorTerminal import OK, WARN, ERROR
 from config import BON_HISTORY
 from grocy_connector import (
     add_or_update_product,
-    load_rewe_price_data,
+#    load_rewe_price_data,
     get_ean_from_product_name,
     get_ean_from_product_name_fuzzy,
     get_ean_from_rewe_code,
     grocy_product_exists,
 )
 
+import grocy_connector
+import json
+
 RECEIPT_URL = "https://shop.rewe.de/api/receipts/"
 
 # Hier deinen RTSP-Token hart eintragen (komplett, ohne Anführungszeichen im Token)
-HARDCODED_RTSP_TOKEN = "YOUR_TOKEN_HERE"
+HARDCODED_RTSP_TOKEN = "YOUR_RTSP_TOKEN_HERE"
 
 def prerequisites():
     try:
@@ -64,9 +67,11 @@ def fetch_rewe_bon(rtsp: str):
     return rewe_bon_response.json().get("articles", [])
 
 def processrewe_bon(rewe_bon):
-    load_rewe_price_data()
     for product in rewe_bon:
         product_name = product.get("productName", "")
+        if not product_name:
+            print(f"{WARN} Produkt ohne 'productName' gefunden, wird übersprungen: {product}")
+            continue
         ean = get_ean_from_product_name(product_name)
         if not ean:
             ean = get_ean_from_product_name_fuzzy(product_name)
@@ -79,7 +84,7 @@ def processrewe_bon(rewe_bon):
         unit_price = product.get("unitPrice", 0) / 100
         print(f"Verarbeite Produkt: Name='{product_name}', EAN={ean}, Menge={quantity}, Preis={unit_price:.2f}€")
 
-        add_or_update_product(ean, quantity, unit_price)
+        add_or_update_product(ean, quantity, unit_price, bon_product_name=product_name)
 
 def main():
     prerequisites()
@@ -90,9 +95,13 @@ def main():
     rewe_bon = fetch_rewe_bon(rtsp)
 
     if rewe_bon:
+        print(f"{OK} --- Kompletter Bon-Inhalt ---")
+        print(json.dumps(rewe_bon, indent=2, ensure_ascii=False))
+        print(f"{OK} --- Ende Bon-Inhalt ---\n")
         processrewe_bon(rewe_bon)
     else:
         print(f"{ERROR} Kein gültiger eBon abgerufen. Bitte Token prüfen und erneut versuchen.")
+    grocy_connector.db_conn.close()
 
 if __name__ == "__main__":
     main()
