@@ -1,8 +1,4 @@
-# grocy_conector.py
-
-
 import requests
-# import csv
 import unicodedata
 import difflib
 import os
