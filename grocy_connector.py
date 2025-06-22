@@ -50,7 +50,7 @@ def grocy_product_name_exists(product_name):
         return None
 
 def create_product_in_grocy(product_data, ean):
-    LOCATION_ID_KUEHLSCHRANK = 1
+    LOCATION_ID_KUEHLSCHRANK = 2
     SHOPPING_LOCATION_ID_REWE = 1
 
     product_name = product_data.get("product_name", "Unbenanntes Produkt")
@@ -294,13 +294,15 @@ def add_barcode_to_product(product_id, ean):
         print(f"{WARN} Fehler beim Hinzufügen des Barcodes: {e}")
         return False
 
-def update_stock(product_id, amount, price):
+def update_stock(product_id, amount, price, purchased_date=None):
     url = ENDPOINT_ADD_STOCK.format(product_id=product_id)
     stock_info = {
         "amount": amount,
         "transaction_type": "purchase",
         "price": price,
     }
+    if purchased_date:
+        stock_info["purchased_date"] = purchased_date  # YYYY-MM-DD
     try:
         r = requests.post(
             url,
@@ -359,7 +361,7 @@ def remove_quantity_from_name(name):
         new_name = re.sub(pattern, '', new_name, flags=re.IGNORECASE)
     return new_name.strip()
 
-def add_or_update_product(ean, amount, price, bon_product_name=None):
+def add_or_update_product(ean, amount, price, bon_product_name=None, purchased_date=None):
     # 1. EAN aus DB anhand des Bon-Namens bestimmen (direkt oder fuzzy)
     if bon_product_name:
         ean_db = get_ean_from_product_name(bon_product_name)
@@ -372,7 +374,7 @@ def add_or_update_product(ean, amount, price, bon_product_name=None):
     if grocy_product_exists(ean):
         product_id = get_grocy_product_id_by_ean(ean)
         if product_id:
-            return update_stock(product_id, amount, price)
+            return update_stock(product_id, amount, price, purchased_date=purchased_date)
         else:
             print(f"{WARN} Produkt-ID für EAN {ean} konnte nicht gefunden werden.")
             return False
@@ -389,7 +391,7 @@ def add_or_update_product(ean, amount, price, bon_product_name=None):
             return False
         if not add_barcode_to_product(product_id, ean):
             return False
-        return update_stock(product_id, amount, price)
+        return update_stock(product_id, amount, price, purchased_date=purchased_date)
 
 def fetch_product_from_off(ean):
     """Hole Produktdaten von Open Food Facts anhand der EAN."""

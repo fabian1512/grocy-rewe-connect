@@ -66,7 +66,7 @@ def fetch_rewe_bon(rtsp: str):
     print(f"{OK} Rewe-Bon mit der UUID {option_receipts[option]['receiptId']} wurde erfolgreich abgerufen")
     return rewe_bon_response.json().get("articles", [])
 
-def processrewe_bon(rewe_bon):
+def processrewe_bon(rewe_bon, purchased_date=None):
     for product in rewe_bon:
         product_name = product.get("productName", "")
         if not product_name:
@@ -84,7 +84,8 @@ def processrewe_bon(rewe_bon):
         unit_price = product.get("unitPrice", 0) / 100
         print(f"Verarbeite Produkt: Name='{product_name}', EAN={ean}, Menge={quantity}, Preis={unit_price:.2f}€")
 
-        add_or_update_product(ean, quantity, unit_price, bon_product_name=product_name)
+        # Hier das Kaufdatum mitgeben!
+        add_or_update_product(ean, quantity, unit_price, bon_product_name=product_name, purchased_date=purchased_date)
 
 def main():
     prerequisites()
