@@ -1,6 +1,6 @@
 import requests
 from colorTerminal import OK, WARN, ERROR
-from config import BON_HISTORY
+from config import BON_HISTORY, HARDCODED_RTSP_TOKEN
 from grocy_connector import (
     add_or_update_product,
 #    load_rewe_price_data,
@@ -18,9 +18,6 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 RECEIPT_URL = "https://shop.rewe.de/api/receipts/"
-
-# Hier deinen RTSP-Token hart eintragen (komplett, ohne Anführungszeichen im Token)
-HARDCODED_RTSP_TOKEN = "YOUR_RTSP_TOKEN_HERE"
 
 def prerequisites():
     try:

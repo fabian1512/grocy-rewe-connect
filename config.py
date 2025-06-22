@@ -8,3 +8,5 @@ GROCY_SHOPPING_LOCATION_ID_REWE = 1  # ID für REWE als Einkaufsort
 
 GROCY_DEFAULT_BEST_BEFORE_DAYS = 30  # Standard-MHD in Tagen
 GROCY_MIN_STOCK_AMOUNT = 0           # Mindestbestand
+
+HARDCODED_RTSP_TOKEN = "YOUR_RTSP_TOKEN_HERE"  # Dein REWE RTSP-Token für die eBon-Abfrage
