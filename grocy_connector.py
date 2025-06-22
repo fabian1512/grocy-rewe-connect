@@ -1,127 +1,402 @@
-"""Grocy Connector for Grocy API
-This code allows you to add products to your Grocy instance via ean codes.
-It includes functions to add products to stock, create new products, and assign ean codes to existing products.
-It also handles user input for creating new products or assigning ean codes."""
 import requests
-from requests.packages.urllib3.exceptions import InsecureRequestWarning # type: ignore pylint: disable=E0401
+import unicodedata
+import difflib
+import os
+import base64
+import sqlite3
+import re
 from colorTerminal import OK, WARN, ERROR
-from config import GROCY_API_URL, GROCY_API_KEY                           # pylint: disable=E0611
+from config import GROCY_API_URL, GROCY_API_KEY, GROCY_LOCATION_ID_KUEHLSCHRANK, GROCY_LOCATION_ID, GROCY_DEFAULT_BEST_BEFORE_DAYS, GROCY_MIN_STOCK_AMOUNT
 
-requests.packages.urllib3.disable_warnings(InsecureRequestWarning) # type: ignore pylint: disable=E1101
-
-IGNORE_FILE = "ignore.txt"
 GROCY_BASE_URL = GROCY_API_URL + "/api"
-GROCY_HEADER = {"GROCY-API-KEY": GROCY_API_KEY, "accept": "application/json", "Content-Type": "application/json"}
-ENDPOINT_SYSINFO = GROCY_BASE_URL + "/system/info"
+GROCY_HEADER = {
+    "GROCY-API-KEY": GROCY_API_KEY,
+    "accept": "application/json",
+    "Content-Type": "application/json",
+}
 ENDPOINT_GET_BYBARCODE = GROCY_BASE_URL + "/stock/products/by-barcode/"
-ENDPOINT_ADD_BARCODE_BY_ID = GROCY_BASE_URL + "/objects/product_barcodes"
 ENDPOINT_ADD_PRODUCT = GROCY_BASE_URL + "/objects/products"
-ENDPOINT_GET_BYID = GROCY_BASE_URL + "/objects/products?query%5B%5D=id%3D"
+ENDPOINT_ADD_BARCODE = GROCY_BASE_URL + "/objects/product_barcodes"
+ENDPOINT_ADD_STOCK = GROCY_BASE_URL + "/stock/products/{product_id}/add"
 
-def add_product_to_stock(itemean: int, amount: int, price):
-    """Add a Product to GROCY INSTANCE via ean"""
+DB_FILE = "rewe_products.db"
 
-    with open(IGNORE_FILE, 'r', encoding='utf-8') as data:
-        for ean in data:
-            try:
-                if itemean == int(ean.strip()):
-                    return 0
-            except ValueError:
-                print(f"{ERROR} Konnte aktuelle ean nicht mit der Ignore-Liste vergleichen")
+# Globale Datenbankverbindung herstellen
+db_conn = sqlite3.connect(DB_FILE)
+db_conn.row_factory = sqlite3.Row
 
-    print(f"Suche nach '{itemean}' in der Datenbank..")
+def normalize_string(s):
+    s = unicodedata.normalize('NFKD', s)
+    s = s.replace("’", "'").replace("‘", "'")
+    s = s.lower().strip()
+    return s
+
+def grocy_product_name_exists(product_name):
+    url = GROCY_BASE_URL + "/objects/products"
     try:
-        product_by_barcode = requests.get(ENDPOINT_GET_BYBARCODE + str(itemean), headers=GROCY_HEADER, timeout=10, verify=False).json()
-        print(f"{OK} Artikel gefunden: {product_by_barcode['product']['name']}")
-        product = {
-            "amount": amount,
-            "transaction_type": "purchase",
-            "price": price
-        }
-        add_to_stock = requests.post(ENDPOINT_GET_BYBARCODE + str(itemean) + "/add", json=product, headers=GROCY_HEADER, timeout=10, verify=False)
-        if add_to_stock.status_code == 200:
-            print(f"{OK} {amount}x {product_by_barcode['product']['name']} wurde dem Bestand hinzugefügt. Stückpreis: {price}€")
+        r = requests.get(url, headers=GROCY_HEADER, timeout=10, verify=False)
+        r.raise_for_status()
+        products = r.json()
+        for product in products:
+            if product.get("name", "").strip().lower() == product_name.strip().lower():
+                return product.get("id")
+        return None
+    except Exception as e:
+        print(f"{WARN} Fehler bei Grocy-Namensabfrage: {e}")
+        return None
+
+def create_product_in_grocy(product_data, ean):
+    product_name = product_data.get("product_name", "Unbenanntes Produkt")
+    # Prüfe, ob Produktname schon existiert
+    existing_id = grocy_product_name_exists(product_name)
+    if existing_id:
+        print(f"{WARN} Produktname '{product_name}' existiert bereits in Grocy (ID {existing_id}), lege nicht erneut an.")
+        return existing_id
+
+    product_info = {
+        "name": product_name,
+        "qu_id_stock": 2,
+        "qu_id_purchase": 2,
+        "qu_id_price": 2,
+        "default_best_before_days": GROCY_DEFAULT_BEST_BEFORE_DAYS,
+        "location_id": GROCY_LOCATION_ID_KUEHLSCHRANK,
+        "shopping_location_id": GROCY_LOCATION_ID,  # <-- jetzt wird die REWE-Location-ID aus config.py verwendet!
+        "min_stock_amount": GROCY_MIN_STOCK_AMOUNT,
+    }
+    try:
+        r = requests.post(
+            ENDPOINT_ADD_PRODUCT,
+            headers=GROCY_HEADER,
+            json=product_info,
+            timeout=10,
+            verify=False,
+        )
+        r.raise_for_status()
+        product_id = r.json().get("created_object_id")
+        print(f"{OK} Produkt '{product_info['name']}' in Grocy angelegt mit ID {product_id}.")
+
+        ean_str = str(ean).strip()
+        print(f"{OK} Verarbeite EAN: '{ean_str}'")
+
+        image_url = get_image_url_by_ean(ean_str)
+        if image_url:
+            print(f"{OK} Bild-URL aus DB für EAN '{ean_str}': {image_url}")
         else:
-            print(f"{ERROR} {itemean} konnte nicht hinzugefügt werden... :( Bitte prüfe den Bestand in Grocy zu diesem Produkt.")
-    except requests.exceptions.RequestException:
-        print(f"{WARN} Es wurde kein Produkt mit der ean {itemean} gefunden. Möchtest du ein Produkt anlegen oder die ean einem Produkt zuweisen?")
-        na_product = None
-        while na_product is None:
-            try:
-                print("(1) Neues Produkt erstellen\n(2) ean einem bestehenden Produkt hinzufügen\n(8) Einmal überspringen\n(9) Immer überspringen\n(0) Beenden")
-                na_product = int(input())
-            except ValueError:
-                print(f"{ERROR} Bitte nutze eine der angegebenen Optionen, tippe dafür einfach die Zahl.")
-        if na_product == 0:
-            exit(0)
-        if na_product == 8:
-            return 0
-        elif na_product == 1:
-            print("Starte Dialog für: PRODUKT ANLEGEN\n\n\n")
-            print("Name des Produkts: ")
-            product_name = input()
-            print("\nMengeneinheiten: (2) Stück, (3) Packung, (4) Flasche\nMengeneinheit: ")
-            product_qu = input()
-            product_info = {
-                "name": product_name,
-                "qu_id_purchase": product_qu,
-                "qu_id_stock": product_qu
-            }
-            try:
-                print(product_info)
-                create_product = requests.post(ENDPOINT_ADD_PRODUCT, headers=GROCY_HEADER, timeout=10, json=product_info, verify=False)
-                print(f"{create_product}\n{create_product.content}")
-                product_id = create_product.json()
-                product_id = product_id['created_object_id']
-                print(product_id)
-                if create_product.status_code == 200:
-                    print(f"{OK} Produkt {product_name} wurde angelegt. ID des Produkts: {product_id}\nFüge ean hinzu...")
-                    newean = {
-                        "barcode": itemean,
-                        "product_id": product_id,
-                        "amount": 1
-                    }
-                    postreq = requests.post(ENDPOINT_ADD_BARCODE_BY_ID, headers=GROCY_HEADER, json=newean, timeout=10, verify=False)
-                    if postreq.status_code == 200:
-                        print(f"{OK} ean wurde dem Produkt hinzugefügt. Dialog wird neugestartet.")
-                    else:
-                        print(f"{ERROR} ean konnte dem Produkt nicht hinzugefügt werden. Dialog wird neugestartet.")
-                else:
-                    print(f"{ERROR} Antwort von Grocy war != 200, bitte prüfen. Dialog wird Pausiert, ENTER zum fortfahren...")
-                    input()
-            except requests.exceptions.RequestException:
-                print(f"{ERROR} Fehler beim Anlegen des Produktes. Dialog wird neugestartet.")
-            add_product_to_stock(itemean, amount, price)
-        elif na_product == 2:
-            product_id = None
-            print("Bitte schaue in GROCY nach dem gewünschten Produkt und kopiere die ID aus der URL und gebe sie hier ein: ")
-            while product_id is None:
+            print(f"{WARN} Keine Bild-URL in DB für EAN '{ean_str}'")
+        
+        if image_url:
+            image_filename = f"temp_product_image_{ean_str}.jpg"
+            if download_image(image_url, image_filename):
+                upload_product_image(product_id, image_filename)
                 try:
-                    product_id = int(input())
-                    try:
-                        find_product_by_id = requests.get(ENDPOINT_GET_BYID + str(product_id), headers=GROCY_HEADER, timeout=10, verify=False).json()
-                        find_product_by_id_data = find_product_by_id[0]
-                        print(f"{OK} Produkt gefunden: {find_product_by_id_data['name']} ... ean wird hinterlegt..")
-                        try:
-                            newean = {
-                                "barcode": itemean,
-                                "product_id": find_product_by_id_data['id'],
-                                "amount": 1
-                            }
-                            postreq = requests.post(ENDPOINT_ADD_BARCODE_BY_ID, headers=GROCY_HEADER, json=newean, timeout=10, verify=False)
-                            if postreq.status_code == 200:
-                                print(f"{OK} ean wurde dem Produkt hinzugefügt. Dialog wird neugestartet.")
-                            else:
-                                print(f"{ERROR} ean konnte dem Produkt nicht hinzugefügt werden. Dialog wird neugestartet.")
-                        except requests.exceptions.RequestException:
-                            print(f"{ERROR} ean konnte dem Produkt nicht hinzugefügt werden. Dialog wird neugestartet.")
-                        add_product_to_stock(itemean, amount, price)
-                    except requests.exceptions.RequestException as exc:
-                        product_id = None
-                        raise RuntimeError("Failed to find product by ID") from exc
-                except ValueError:
-                    print(f"{ERROR} Produkt nicht gefunden, versuche es noch einmal.")
-        elif na_product == 9:
-            with open(IGNORE_FILE, 'a', encoding='utf-8') as data:
-                print(f"{OK} {itemean} wird zukünftig ignoriert.")
-                data.write(str(itemean) + '\n')
+                    os.remove(image_filename)
+                except Exception:
+                    pass
+
+        return product_id
+    except Exception as e:
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"{ERROR} Grocy-Fehler: {e.response.text}")
+        print(f"{WARN} Fehler beim Anlegen des Produkts in Grocy: {e}")
+        return None
+
+def get_ean_from_product_name(product_name):
+    name_norm = normalize_string(product_name)
+    cur = db_conn.execute("SELECT ean FROM products WHERE lower(trim(name)) = ?", (name_norm,))
+    row = cur.fetchone()
+    if row and row["ean"]:
+        print(f"{OK} Direkter Namens-Treffer: '{product_name}' → EAN {row['ean']}")
+        return row["ean"]
+    print(f"{WARN} Kein direkter Namens-Treffer für '{product_name}'")
+    return None
+
+def get_ean_from_product_name_fuzzy(product_name, cutoff=0.8):
+    name_norm = normalize_string(product_name)
+    # Hole alle Namen aus der DB
+    cur = db_conn.execute("SELECT name, ean FROM products")
+    names = []
+    name_to_ean = {}
+    for row in cur.fetchall():
+        n = normalize_string(row["name"])
+        names.append(n)
+        name_to_ean[n] = row["ean"]
+    import difflib
+    matches = difflib.get_close_matches(name_norm, names, n=1, cutoff=cutoff)
+    if matches:
+        match = matches[0]
+        ean = name_to_ean.get(match)
+        print(f"{OK} Fuzzy-Treffer: '{product_name}' ≈ '{match}' → EAN {ean}")
+        return ean
+    print(f"{WARN} Kein fuzzy Namens-Treffer für '{product_name}'")
+    return None
+
+def get_ean_from_rewe_code(rewe_code):
+    cur = db_conn.execute("SELECT ean FROM products WHERE trim(ean) = ?", (str(rewe_code).strip(),))
+    row = cur.fetchone()
+    if row and row["ean"]:
+        print(f"{OK} REWE-Code-Treffer: {rewe_code} → EAN {row['ean']}")
+        return row["ean"]
+    print(f"{WARN} Kein REWE-Code-Treffer für {rewe_code}")
+    return None
+
+def get_image_url_by_ean(ean):
+    cur = db_conn.execute("SELECT image FROM products WHERE ean = ?", (str(ean).strip(),))
+    row = cur.fetchone()
+    if row and row["image"]:
+        return row["image"]
+    return None
+
+def download_image(image_url, filename):
+    try:
+        response = requests.get(image_url, timeout=10, verify=False)
+        response.raise_for_status()
+        with open(filename, 'wb') as f:
+            f.write(response.content)
+        print(f"{OK} Bild heruntergeladen: {filename}")
+        return True
+    except Exception as e:
+        print(f"{WARN} Fehler beim Herunterladen des Bildes: {e}")
+        return False
+
+def upload_product_image(product_id, image_path):
+    file_name = f"{product_id}.jpg"
+    # Base64-url-safe kodierter Dateiname ohne Padding "="
+    file_name_b64 = base64.urlsafe_b64encode(file_name.encode()).decode().rstrip("=")
+
+    upload_url = f"{GROCY_API_URL}/api/files/productpictures/{file_name_b64}"
+    headers_upload = {
+        "GROCY-API-KEY": GROCY_API_KEY,
+        "Content-Type": "application/octet-stream"
+    }
+
+    try:
+        with open(image_path, "rb") as image_file:
+            resp = requests.put(upload_url, data=image_file, headers=headers_upload, timeout=10, verify=False)
+        print(f"Upload Status: {resp.status_code} {resp.text}")
+        if resp.status_code not in (200, 204):
+            print(f"[WARN] Produktbild konnte nicht hochgeladen werden: {resp.status_code} {resp.text}")
+            return False
+    except Exception as e:
+        print(f"[WARN] Fehler beim Upload: {e}")
+        return False
+
+    # Produkt mit Bilddateiname per PUT aktualisieren
+    success = update_product_picture(product_id, file_name)
+    if not success:
+        print(f"[WARN] Produktbild konnte nicht im Produkt hinterlegt werden.")
+        return False
+
+    print(f"{OK} Produktbild für Produkt-ID {product_id} erfolgreich hochgeladen und zugewiesen.")
+    return True
+
+def update_product_picture(product_id, file_name):
+    url = f"{GROCY_API_URL}/api/objects/products/{product_id}"
+    headers = {
+        "GROCY-API-KEY": GROCY_API_KEY,
+        "Content-Type": "application/json"
+    }
+    data = {
+        "picture_file_name": file_name
+    }
+    try:
+        resp = requests.put(url, headers=headers, json=data, timeout=10, verify=False)
+        if resp.status_code not in (200, 204):
+            print(f"[WARN] Fehler beim Setzen des Bildnamens: {resp.status_code} {resp.text}")
+            return False
+        return True
+    except Exception as e:
+        print(f"[WARN] Fehler beim Setzen des Bildnamens: {e}")
+        return False
+
+def create_product_in_grocy(product_data, ean):
+    product_name = product_data.get("product_name", "Unbenanntes Produkt")
+    # Prüfe, ob Produktname schon existiert
+    existing_id = grocy_product_name_exists(product_name)
+    if existing_id:
+        print(f"{WARN} Produktname '{product_name}' existiert bereits in Grocy (ID {existing_id}), lege nicht erneut an.")
+        return existing_id
+
+    product_info = {
+        "name": product_name,
+        "qu_id_stock": 2,
+        "qu_id_purchase": 2,
+        "qu_id_price": 2,
+        "default_best_before_days": GROCY_DEFAULT_BEST_BEFORE_DAYS,
+        "location_id": GROCY_LOCATION_ID_KUEHLSCHRANK,
+        "shopping_location_id": GROCY_LOCATION_ID,
+        "min_stock_amount": GROCY_MIN_STOCK_AMOUNT,
+    }
+    try:
+        r = requests.post(
+            ENDPOINT_ADD_PRODUCT,
+            headers=GROCY_HEADER,
+            json=product_info,
+            timeout=10,
+            verify=False,
+        )
+        r.raise_for_status()
+        product_id = r.json().get("created_object_id")
+        print(f"{OK} Produkt '{product_info['name']}' in Grocy angelegt mit ID {product_id}.")
+
+        ean_str = str(ean).strip()
+        print(f"{OK} Verarbeite EAN: '{ean_str}'")
+
+        image_url = get_image_url_by_ean(ean_str)
+        if image_url:
+            print(f"{OK} Bild-URL aus DB für EAN '{ean_str}': {image_url}")
+        else:
+            print(f"{WARN} Keine Bild-URL in DB für EAN '{ean_str}'")
+        
+        if image_url:
+            image_filename = f"temp_product_image_{ean_str}.jpg"
+            if download_image(image_url, image_filename):
+                upload_product_image(product_id, image_filename)
+                try:
+                    os.remove(image_filename)
+                except Exception:
+                    pass
+
+        return product_id
+    except Exception as e:
+        if hasattr(e, 'response') and e.response is not None:
+            print(f"{ERROR} Grocy-Fehler: {e.response.text}")
+        print(f"{WARN} Fehler beim Anlegen des Produkts in Grocy: {e}")
+        return None
+
+def add_barcode_to_product(product_id, ean):
+    barcode_info = {
+        "barcode": str(ean),
+        "product_id": product_id,
+        "amount": 1,
+    }
+    try:
+        r = requests.post(
+            ENDPOINT_ADD_BARCODE,
+            headers=GROCY_HEADER,
+            json=barcode_info,
+            timeout=10,
+            verify=False,
+        )
+        r.raise_for_status()
+        print(f"{OK} Barcode {ean} zum Produkt {product_id} hinzugefügt.")
+        return True
+    except Exception as e:
+        print(f"{WARN} Fehler beim Hinzufügen des Barcodes: {e}")
+        return False
+
+def update_stock(product_id, amount, price, purchased_date=None):
+    url = ENDPOINT_ADD_STOCK.format(product_id=product_id)
+    stock_info = {
+        "amount": amount,
+        "transaction_type": "purchase",
+        "price": price,
+    }
+    if purchased_date:
+        stock_info["purchased_date"] = purchased_date  # Muss exakt so heißen!
+    try:
+        r = requests.post(
+            url,
+            headers=GROCY_HEADER,
+            json=stock_info,
+            timeout=10,
+            verify=False,
+        )
+        r.raise_for_status()
+        print(f"{OK} Bestand für Produkt-ID {product_id} aktualisiert. (Kaufdatum: {purchased_date})")
+        return True
+    except Exception as e:
+        print(f"{WARN} Fehler beim Aktualisieren des Bestands: {e}")
+        return False
+
+def grocy_product_exists(ean):
+    url = ENDPOINT_GET_BYBARCODE + str(ean)
+    try:
+        r = requests.get(url, headers=GROCY_HEADER, timeout=10, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            return "product" in data
+        return False
+    except Exception as e:
+        print(f"{WARN} Fehler bei Grocy-Abfrage: {e}")
+        return False
+
+def get_grocy_product_id_by_ean(ean):
+    url = ENDPOINT_GET_BYBARCODE + str(ean)
+    try:
+        r = requests.get(url, headers=GROCY_HEADER, timeout=10, verify=False)
+        if r.status_code == 200:
+            data = r.json()
+            product = data.get("product")
+            if product and "id" in product:
+                return product["id"]
+        return None
+    except Exception as e:
+        print(f"{WARN} Fehler beim Abrufen der Produkt-ID von Grocy: {e}")
+        return None
+
+def remove_quantity_from_name(name):
+    """
+    Entfernt typische Mengen-/Gewichtsangaben am Ende des Produktnamens.
+    Beispiele: "191g", "1kg", "1 Stück", "ca. 200g", "0,25l", "8x100g", "1Stück", "1,5kg"
+    """
+    patterns = [
+        r"\s*\d+[.,]?\d*\s*([xX]\s*\d+)?\s*(Stück|Stk\.?|kg|g|l|ml|cl|dl|mg|µg|Packung|Becher|Dose|Flasche|Tüte|Bund|Pck|Pckg|Paket)\.?$",
+        r"\s*ca\.\s*\d+[.,]?\d*\s*(g|kg|l|ml|Stück)\.?$",
+        r"\s*\d+[.,]?\d*\s*(g|kg|l|ml|Stück)\.?$",
+        r"\s*\d+\s*x\s*\d+\s*(g|ml|Stück)\.?$",
+        r"\s*\d+[.,]?\d*\s*(%|vol|Vol)\.?$",
+    ]
+    new_name = name
+    for pattern in patterns:
+        new_name = re.sub(pattern, '', new_name, flags=re.IGNORECASE)
+    return new_name.strip()
+
+def add_or_update_product(ean, amount, price, bon_product_name=None, purchased_date=None):
+    # 1. EAN aus DB anhand des Bon-Namens bestimmen (direkt oder fuzzy)
+    if bon_product_name:
+        ean_db = get_ean_from_product_name(bon_product_name)
+        if not ean_db:
+            ean_db = get_ean_from_product_name_fuzzy(bon_product_name)
+        if ean_db:
+            ean = ean_db  # Überschreibe EAN mit der aus der DB gefundenen EAN
+
+    # 2. Suche in Grocy nach der EAN
+    if grocy_product_exists(ean):
+        product_id = get_grocy_product_id_by_ean(ean)
+        if product_id:
+            return update_stock(product_id, amount, price, purchased_date)
+        else:
+            print(f"{WARN} Produkt-ID für EAN {ean} konnte nicht gefunden werden.")
+            return False
+    else:
+        product_data = fetch_product_from_off(ean) or {}
+        # Immer den Namen aus dem Bon verwenden, falls vorhanden!
+        if bon_product_name:
+            clean_name = remove_quantity_from_name(bon_product_name)
+            product_data["product_name"] = clean_name
+        else:
+            product_data["product_name"] = remove_quantity_from_name(product_data.get("product_name") or str(ean))
+        product_id = create_product_in_grocy(product_data, ean)
+        if not product_id:
+            return False
+        if not add_barcode_to_product(product_id, ean):
+            return False
+        return update_stock(product_id, amount, price, purchased_date=purchased_date)
+
+def fetch_product_from_off(ean):
+    """Hole Produktdaten von Open Food Facts anhand der EAN."""
+    url = f"https://world.openfoodfacts.org/api/v0/product/{ean}.json"
+    try:
+        r = requests.get(url, timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        if data.get("status") == 1:
+            return data.get("product", {})
+        else:
+            print(f"{WARN} Kein Produkt bei Open Food Facts für EAN {ean}")
+            return None
+    except Exception as e:
+        print(f"{WARN} Fehler beim Abrufen von Open Food Facts: {e}")
+        return None
+
+
