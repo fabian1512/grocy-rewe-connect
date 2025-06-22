@@ -10,7 +10,7 @@ import base64
 import sqlite3
 import re
 from colorTerminal import OK, WARN, ERROR
-from config import GROCY_API_URL, GROCY_API_KEY, GROCY_LOCATION_ID_KUEHLSCHRANK, GROCY_SHOPPING_LOCATION_ID_REWE, GROCY_DEFAULT_BEST_BEFORE_DAYS, GROCY_MIN_STOCK_AMOUNT
+from config import GROCY_API_URL, GROCY_API_KEY, GROCY_LOCATION_ID_KUEHLSCHRANK, GROCY_LOCATION_ID, GROCY_DEFAULT_BEST_BEFORE_DAYS, GROCY_MIN_STOCK_AMOUNT
 
 GROCY_BASE_URL = GROCY_API_URL + "/api"
 GROCY_HEADER = {
@@ -64,7 +64,7 @@ def create_product_in_grocy(product_data, ean):
         "qu_id_price": 2,
         "default_best_before_days": GROCY_DEFAULT_BEST_BEFORE_DAYS,
         "location_id": GROCY_LOCATION_ID_KUEHLSCHRANK,
-        "shopping_location_id": GROCY_SHOPPING_LOCATION_ID_REWE,  # <-- hier korrigiert!
+        "shopping_location_id": GROCY_LOCATION_ID,  # <-- jetzt wird die REWE-Location-ID aus config.py verwendet!
         "min_stock_amount": GROCY_MIN_STOCK_AMOUNT,
     }
     try:
@@ -227,7 +227,7 @@ def create_product_in_grocy(product_data, ean):
         "qu_id_price": 2,
         "default_best_before_days": GROCY_DEFAULT_BEST_BEFORE_DAYS,
         "location_id": GROCY_LOCATION_ID_KUEHLSCHRANK,
-        "shopping_location_id": GROCY_SHOPPING_LOCATION_ID_REWE,
+        "shopping_location_id": GROCY_LOCATION_ID,
         "min_stock_amount": GROCY_MIN_STOCK_AMOUNT,
     }
     try:
